@@ -1,16 +1,17 @@
 #lang racket
 
-;;; Interface to the forecast.io weather service
-;;; See https://developer.forecast.io
-;;; Updated: 2015-12-28
+;;; Interface to the darksky weather service
+;;; See https://darksky.net/dev
+;;; Updated: 2018-09
 
 (require net/url)
 (require net/http-client)
 (require json)
 
+(require "geo.rkt")
+(require "local.rkt")
+
 (provide (struct-out Forecast)    
-         (struct-out Georef)      
-         (struct-out Timezone)    
          (struct-out Datapoint)
          (struct-out Datablock)
          (struct-out Alert))
@@ -18,9 +19,6 @@
 (provide get-forecast           ; Retrieve a forecast using the forecastio api
          imminent-rainfall      ; Return a list of pairs (minute, precipition)  
          )
-
-;; A Georef identifies a location on the Earth
-(struct Georef (latitude longitude) #:transparent)
 
 ;; A Forecast represents a weather forecast returned from the forecastio api
 (struct Forecast (location     ; Georef: Requested location
@@ -32,9 +30,6 @@
                   alerts       ; list-of Alert: Weather alerts, if any
                   flags        ; Miscellaneous metadata
                   ))
-
-;; A Timezone represents a timezone
-(struct Timezone (name offset) #:transparent)
 
 ;; A Datapoint is the summary of the weather at a particular point in time
 ;; Any of these properties (except time) may be missing, which is denoted #f
@@ -86,6 +81,22 @@
                uri         ; String:
                ))
 
+;;---------------------------------------------------------------------------------------------------
+;; Constants
+;;---------------------------------------------------------------------------------------------------
+
+;; Template URL to access the forecast api
+;; To create a valid api call, add an api-key and a georef to the path
+ (define DARKSKY-URL
+  (make-url "https"                                   ; scheme 
+            #f                                        ; user
+            "api.darksky.net"                         ; host
+            #f                                        ; port
+            #t                                        ; path-absolute?
+            (list (make-path/param "forecast" null))  ; path, followed by (API-KEY
+                                                      ; georef time)
+            '((units . "si"))                         ; query
+            #f))                                      ; fragment
 
 ;;---------------------------------------------------------------------------------------------------
 ;; Interface
@@ -95,6 +106,15 @@
 ;; Retrieve a forecast and parse into a Forecast structure
 (define (get-forecast api-key georef #:time [time #f])
   (parse-forecast (get-forecast/json api-key georef time)))
+
+;; String Georef -> jsexpr
+;; Retrieve a forecast for a specified georef (and, optionally, time) as JSON
+(define (get-forecast/json api-key georef time)
+  (string->jsexpr
+   (call/input-url
+    (forecast-request-url api-key georef time)
+    get-pure-port
+    port->string)))
 
 ;; Forecast -> List-of (Number . Number)
 ;;
@@ -130,19 +150,6 @@
                    (>= p  0))))    ; and positive precipitation
           precipitation))
 
-;; Template URL to access the forecast api
-;; To create a valid api call, add an api-key and a georef to the path
- (define FORECASTIO
-  (make-url "https"                                   ; scheme 
-            #f                                        ; user
-            "api.forecast.io"                         ; host
-            #f                                        ; port
-            #t                                        ; path-absolute?
-            (list (make-path/param "forecast" null))  ; path, followed by (API
-                                        ; georef time)
-            '((units . "si"))                         ; query
-            #f))                                      ; fragment
-
  ;; jsexpr -> Forecast
  ;; Parse a forecast (as returned by get-forecast/json) into a Forecast structure
 (define (parse-forecast forecast)
@@ -156,13 +163,6 @@
             (parse-datablock (extract-part 'daily))  
             (parse-alerts    (extract-part 'alerts))
             (extract-part 'flags))) ; Retain as unparsed jexpr as we don't use the flags
-
-;; String Georef -> jsexpr
-;; Retrieve a forecast for a specified georef (and, optionally, time) as JSON
-(define (get-forecast/json api-key georef time)
-  (string->jsexpr (call/input-url (forecast-request-url api-key georef time)
-                                  get-pure-port
-                                  port->string)))
 
 ;; Construct a well-formed URL request to the forecastio API
 (define (forecast-request-url api-key georef time)
@@ -180,7 +180,7 @@
                  u
                  [path (append (url-path u)
                                (list (make-path/param s null)))]))
-  (append-url (append-url FORECASTIO api-key) path))
+  (append-url (append-url DARKSKY-URL api-key) path))
                   
 ;; Parse various components of a jsexpr forecast
 (define (parse-datapoint dp)
