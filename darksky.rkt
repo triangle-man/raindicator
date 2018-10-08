@@ -1,23 +1,22 @@
-#lang racket
+#lang racket/base
 
 ;;; Interface to the darksky weather service
 ;;; See https://darksky.net/dev
 ;;; Updated: 2018-09
 
+(require racket/port)
 (require net/url)
 (require net/http-client)
 (require json)
 
 (require "geo.rkt")
-(require "local.rkt")
 
 (provide (struct-out Forecast)    
          (struct-out Datapoint)
          (struct-out Datablock)
          (struct-out Alert))
 
-(provide get-forecast           ; Retrieve a forecast using the forecastio api
-         imminent-rainfall      ; Return a list of pairs (minute, precipition)  
+(provide get-forecast           ; String Georef -> Forecast
          )
 
 ;; A Forecast represents a weather forecast returned from the forecastio api
@@ -29,7 +28,13 @@
                   daily        ; Datablock: Weather day-by-day for the next week
                   alerts       ; list-of Alert: Weather alerts, if any
                   flags        ; Miscellaneous metadata
-                  ))
+                  ) #:transparent)
+
+;; A Datablock is a related set of datapoints
+(struct Datablock (summary  ; String:
+                   icon     ; String:
+                   data     ; List-of Datapoint
+                   ) #:transparent)
 
 ;; A Datapoint is the summary of the weather at a particular point in time
 ;; Any of these properties (except time) may be missing, which is denoted #f
@@ -44,42 +49,45 @@
    nearestStormDistance   ; Number: In kilometres. Only defined on currently.
    nearestStormBearing    ; Number: 0 North-90 East...
    precipIntensity        ; Number: mm/hour (heavy precipitation is around 10 mm/hour)
+   precipIntensityError   ; Number: std. dev. of precipIntensity
    precipIntensityMax     ; Number: Max precipitation on given day. Only on daily datapoints
    precipIntensityMaxTime ; Number: Unix time. Only on daily datapoints
    precipProbability      ; Number: 0-1. Probability of precipitation
-   precipType             ; String: One of "rain", "snow", "sleet", or "hail"
+   precipType             ; String: One of "rain", "snow", or "sleet"
    precipAccumulation     ; Number: Snowfall accumulation in cm. Only on daily datapoints
    temperature            ; Number: Temperature in degrees C. Not on daily datapoints
-   temperatureMin         ; Number: Only on daily datapoints
-   temperatureMinTime     ;
-   temperatureMax         ;
-   temperatureMaxTime     ;
-   apparentTemperatureMin      ; Number: Only on daily datapoints
-   apparentTemperatureMinTime  ;
-   apparentTemperatureMax      ;
-   apparentTemperatureMaxTime  ;
+   temperatureLow         ; Number: Only on daily datapoints
+   temperatureLowTime     ;
+   temperatureHigh        ;
+   temperatureHighTime    ;
+   apparentTemperature    ; Number: Not on daily datatpoints
+   apparentTemperatureLow      ; Number: Only on daily datapoints
+   apparentTemperatureLowTime  ; "
+   apparentTemperatureHigh     ; "
+   apparentTemperatureHighTime ; "
    dewPoint               ; Number: Dew point at time in degrees C
    windSpeed              ; Number: In metres/second
-   windBearing            ; Number:
+   windBearing            ; Number: Direction from which wind comes (E is 90 etc)
+   windGust               ; Number:
+   windGustTime           ; Number:
    cloudCover             ; Number: 0 clear-0.4 scattered clouds-0.75 broken cover-1 overcast
    humidity               ; Number: Relative humidity (between 0 and 1)
    pressure               ; Number: In hectopascals (equivalent to millibar)
    visibility             ; Number: In kilometres
    ozone                  ; Number: In Dobson units
+   uvIndex                ; Number
+   uvIndexTime            ; Number
    ) #:transparent)
-
-;; A Datablock is a related set of datapoints
-(struct Datablock (summary  ; String:
-                   icon     ; String:
-                   data     ; List-of Datapoint
-                   ))
 
 ;; An Alert represents a severe weather warning
 (struct Alert (title       ; String: Short text summary
+               severity    ; String: Either "advisory", "watch", or "warning"
+               time        ; Number: Time alert was issued
                expires     ; Number: Unix time
+               regions     ; List-of String: Names of regions covered by alert
                description ; String: Detailed description
                uri         ; String:
-               ))
+               ) #:transparent)
 
 ;;---------------------------------------------------------------------------------------------------
 ;; Constants
@@ -116,39 +124,10 @@
     get-pure-port
     port->string)))
 
-;; Forecast -> List-of (Number . Number)
-;;
-;; Extract from a Forecast a list of pairs of the time from now (in minutes) and
-;; the rainfall at that time in mm/hour. The list is not necessarily of length
-;; 60. 
-;; 
-(define (imminent-rainfall fc)
-  ;; minutely : List-of Datapoint
-  (define minutely (Datablock-data (Forecast-minutely fc)))
-  (define now (Datapoint-time (Forecast-currently fc)))
-  (if (and minutely now)
-      (extract-precipitation minutely now)
-      '()))
 
 ;;---------------------------------------------------------------------------------------------------
 ;; Internal defines
 ;;---------------------------------------------------------------------------------------------------
-
-;; (List-of Datapoint) number -> List-of (number, number)
-(define (extract-precipitation minutely now)
-  (define precipitation
-    (map (λ (m)
-           (cons (round (/ (- (Datapoint-time m) now) 60)) ; Convert to minutes from now
-                 (Datapoint-precipIntensity m)))
-         minutely))
-    ;; Remove data which appears to be invalid
-  (filter (λ (m)
-            (let ([t (car m)]
-                  [p (cdr m)])
-              (and (>= t  0)       ; times between 0 
-                   (<  t 62)       ; and 62 
-                   (>= p  0))))    ; and positive precipitation
-          precipitation))
 
  ;; jsexpr -> Forecast
  ;; Parse a forecast (as returned by get-forecast/json) into a Forecast structure
@@ -156,13 +135,13 @@
   (define (extract-part part)
     (hash-ref forecast part #f))
   (Forecast (Georef          (extract-part 'latitude) (extract-part 'longitude))
-            (Timezone        (extract-part 'timezone) (extract-part 'offset))
+            (Timezone        (extract-part 'timezone)) ; 'offset is deprecated
             (parse-datapoint (extract-part 'currently)) 
             (parse-datablock (extract-part 'minutely))  
             (parse-datablock (extract-part 'hourly)) 
             (parse-datablock (extract-part 'daily))  
             (parse-alerts    (extract-part 'alerts))
-            (extract-part 'flags))) ; Retain as unparsed jexpr as we don't use the flags
+            (extract-part 'flags))) ; Retain as unparsed jexpr
 
 ;; Construct a well-formed URL request to the forecastio API
 (define (forecast-request-url api-key georef time)
@@ -199,28 +178,34 @@
                                        nearestStormDistance
                                        nearestStormBearing
                                        precipIntensity
+                                       precipIntensityError
                                        precipIntensityMax
                                        precipIntensityMaxTime
                                        precipProbability
                                        precipType
                                        precipAccumulation
                                        temperature
-                                       temperatureMin
-                                       temperatureMinTime
-                                       temperatureMax
-                                       temperatureMaxTime
-                                       apparentTemperatureMin
-                                       apparentTemperatureMinTime
-                                       apparentTemperatureMax
-                                       apparentTemperatureMaxTime
+                                       temperatureLow
+                                       temperatureLowTime
+                                       temperatureHigh
+                                       temperatureHighTime
+                                       apparentTemperature
+                                       apparentTemperatureLow
+                                       apparentTemperatureLowTime
+                                       apparentTemperatureHigh
+                                       apparentTemperatureHighTime
                                        dewPoint
                                        windSpeed
                                        windBearing
+                                       windGust
+                                       windGustTime
                                        cloudCover
                                        humidity
                                        pressure
                                        visibility
-                                       ozone))))
+                                       ozone
+                                       uvIndex
+                                       uvIndexTime))))
 
 ;; A datablock contains a list of datapoints, which we extract by mapping parse-datapoint over the
 ;; list.
@@ -246,6 +231,9 @@
 (define (parse-alert alert)
   (define (extract-part part) (hash-ref alert part #f))
   (Alert (extract-part 'title)
+         (extract-part 'severity)
+         (extract-part 'time)
          (extract-part 'expires)
+         (extract-part 'regions)
          (extract-part 'description)
          (extract-part 'uri)))

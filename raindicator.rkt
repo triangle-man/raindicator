@@ -1,37 +1,67 @@
-#lang racket
+#lang racket/base
 
-(require net/url)
-(require net/http-client)
-(require json)
+(require "minutely.rkt")
+(require "hue.rkt")
+(require "local.rkt")
 
-(require "forecastio.rkt")
-(include "local.rkt")
+;; Notes on normalisation
+;;
+;; Rainfall is in mm/hour. Roughly, anything less
+;; than 2.5 is "light", 2.5-5 is "moderate", and 5 - 7.5 is "heavy". More than
+;; 7.5 is a real storm
+(define MAX-RAIN 7.5)
 
-(define MAXPRECIPITATION (* 25.4 0.4)) ; Intended as a reference value,
-                                       ; corresponding to "heavy" rain. The
-                                       ; actual number from forecast.io may be
-                                       ; higher than this
+;; Main: update the light every 5 minutes
+(module+ main
+  (let loop ()
+    (update-raindicator!)
+    (sleep 300)
+    (loop)))
 
-(define DECAY-CONSTANT 20) ; In minutes, for the NPV calculation
 
-;; List-of (time, rainfall), number -> number, number
-;; Convert the minute-by-minute rainfall for the next hour into a pair of
-;; numbers: the "NPV" of the rain, and the peak rainfall
-;; NPV is normalised based on which datapoints are actually available
+ ;; Get rain forecast and set colour appropriately. 
+(define (update-raindicator!)
+  (define-values (high average)
+    (imminent-rainfall/summary DARKSKY-API-KEY HOME-GEOREF))
+  ;; (printf "High: ~a Average: ~a~n" high average)
+  (update-light! high average))
 
-(define (summarise-rain precipitation decay-constant)
-  (define times (map car precipitation))
-  (define rains (map cdr precipitation))
-  (define norms (present-values times decay-constant))
+;; If no rain, then set the light to minimum brightness white;
+;; otherwise set to the appropriate colour
+;; high in mm/hour
+;; average in mm/hour
+(define (update-light! high average)
+  (if (eq? high 0)
+      (light-set-bri-ct! HUE-LIGHT 1 250 HUE-USERNAME)
+      (let-values ([(hue bri) (rain->light high average)])
+        (light-set-bri-hue! HUE-LIGHT bri hue HUE-USERNAME))))
+
+;; rain->light : high average -> values colour brightness
+;; Convert max and average rainfall into a brightness and colour
+;; high average -> values colour brightness 
+;; high and average are in mm/hour
+;; brightness is zero to MAX-BRI (imported from hue.rkt)
+;; colour is RED to BLUE (imported from hue.rkt)
+(define (rain->light high average)
+  (define-values (normalised-high normalised-average)
+    (normalise-rain high average))
   (values
-   (/ (apply + (map * norms rains))
-      (apply + norms))
-   (apply max rains)))
-  
-(define (present-values times decay-constant)
-  (map
-   (λ (x) (exp (- (/ x decay-constant))))
-   times))
+   (+ RED (* normalised-high (- BLUE RED)))
+   (ceiling (* normalised-average MAX-BRI))))
+
+;; normalise-rain : high average -> values high average
+;; Normalise high and average rainfall
+;; High is normalised to 0 - 1 where 1 means greater than MAX-RAIN.
+;; Average is normalised to 0 - 1 where 1 means whatever high is for the next hour
+(define (normalise-rain high average)
+  (define normalised-high
+    (min (/ high MAX-RAIN) 1.0))
+  (define normalised-average
+    (/ average high))
+  (values normalised-high normalised-average))
+
+
+
 
 
 

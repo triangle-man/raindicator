@@ -13,4 +13,6 @@
    - see
      http://vfx.engineering/2014/05/11/infrastructure-how-to-establish-passwordless-login-with-ssh/
      
-     
+6. Set up wifi (For Pi Zero W)
+
+

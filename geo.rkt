@@ -9,5 +9,6 @@
 (struct Georef (latitude longitude) #:transparent)
 
 ;; A Timezone represents a timezone
-(struct Timezone (name offset) #:transparent)
+;; DarkSky has deprecated the `offset` parameter, so we no longer use it
+(struct Timezone (name) #:transparent)
 
