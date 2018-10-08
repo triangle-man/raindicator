@@ -2,7 +2,7 @@
 
 (require "minutely.rkt")
 (require "hue.rkt")
-(require "local.rkt")
+(require "config.rkt")
 
 ;; Notes on normalisation
 ;;
