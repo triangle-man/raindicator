@@ -8,13 +8,14 @@
 (require net/url)
 (require net/http-client)
 (require json)
-
 (require "geo.rkt")
 
 (provide (struct-out Forecast)    
          (struct-out Datapoint)
          (struct-out Datablock)
          (struct-out Alert))
+
+(provide (all-from-out "geo.rkt"))
 
 (provide get-forecast           ; String Georef -> Forecast
          )
