@@ -1,5 +1,7 @@
 #lang racket/base
 
+(require racket/math)
+
 (require "minutely.rkt")
 (require "hue.rkt")
 (require "config.rkt")
@@ -46,8 +48,8 @@
   (define-values (normalised-high normalised-average)
     (normalise-rain high average))
   (values
-   (+ RED (* normalised-high (- BLUE RED)))
-   (ceiling (* normalised-average MAX-BRI))))
+   (exact-round (+ RED (* normalised-high (- BLUE RED))))
+   (exact-ceiling (* normalised-average MAX-BRI))))
 
 ;; normalise-rain : high average -> values high average
 ;; Normalise high and average rainfall
